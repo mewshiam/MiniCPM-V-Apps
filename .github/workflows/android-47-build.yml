@@ -33,6 +33,9 @@ jobs:
           yes | sdkmanager --licenses > /dev/null
           sdkmanager "ndk;27.0.12077973" "platform-tools"
 
+      - name: Apply Android patch to llama.cpp-omni (F_NOCACHE is macOS-only)
+        run: git -C ../llama.cpp-omni apply ../patches/llama-moe-slot-f_nocache-android.patch
+
       - name: Build debug APK
         run: ./gradlew :app:assembleDebug --console=plain
 
