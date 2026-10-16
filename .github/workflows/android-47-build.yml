@@ -2,6 +2,8 @@ name: Android Debug Build (4.7 port)
 
 on:
   workflow_dispatch:
+  push:
+    branches: [android-4.7-port]
 
 jobs:
   build:
