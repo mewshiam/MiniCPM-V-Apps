@@ -157,6 +157,12 @@ class LlamaEngine private constructor(
             return File(modelDirFor(context, model), acoustic).absolutePath
         }
 
+        /** Absolute path of the MoE experts directory, or null for dense models. */
+        fun expertsDirFor(context: Context, model: ModelInfo): String? {
+            val dirName = model.expertsDirName ?: return null
+            return File(modelDirFor(context, model), dirName).absolutePath
+        }
+
         fun modelsExist(context: Context): Boolean {
             val model = getSelectedModel(context)
             if (!File(modelPath(context)).exists()) return false
@@ -166,7 +172,17 @@ class LlamaEngine private constructor(
                 return File(ap).exists()
             }
             val mp = mmprojPath(context) ?: return true
-            return File(mp).exists()
+            if (!File(mp).exists()) return false
+            if (model.isMoe) {
+                val expertsDir = expertsDirFor(context, model) ?: return false
+                val dir = File(expertsDir)
+                if (!dir.isDirectory) return false
+                if (!File(dir, "manifest.json").exists()) return false
+                for (i in 0 until model.expertShardCount) {
+                    if (!File(dir, "layer_%03d.bin".format(i)).exists()) return false
+                }
+            }
+            return true
         }
 
         // Rename map for files that were previously sideloaded with a
@@ -311,6 +327,8 @@ class LlamaEngine private constructor(
         fun inferMinicpmvVersion(model: ModelInfo): Int = when (model.id) {
             "minicpm-v-4_6-instruct" -> 46
             "minicpm-v-4"            -> 5
+            "minicpm-v-4_7-1b"       -> 47
+            "minicpm-v-4_7-35b-a3b"  -> 47
             else                     -> 0
         }
 
@@ -395,6 +413,29 @@ class LlamaEngine private constructor(
             }
             if (!model.isTextOnly && !model.isTts && model.mmprojFileName != null) {
                 files.add(FileSpec(model.mmprojFileName, mmprojSources, model.mmprojMd5))
+            }
+            // MoE-SSD: manifest first (small, validates layout fast), then the
+            // per-layer expert shards. Local names keep the experts/ prefix so
+            // they land in the model's experts sub-directory.
+            if (model.isMoe && model.hasHfMsSources) {
+                val hfBase = "https://huggingface.co/${model.hfRepo}/resolve/${model.hfBranch}"
+                val msBase = "https://www.modelscope.cn/models/${model.msRepo}/resolve/${model.msBranch}"
+                val remoteDir = model.expertsRemoteDir
+                val localDir = model.expertsDirName
+                if (remoteDir != null && localDir != null) {
+                    fun expertSources(remoteName: String): List<FileSource> = listOf(
+                        FileSource("HuggingFace", URL("$hfBase/$remoteDir/$remoteName")),
+                        FileSource("ModelScope", URL("$msBase/$remoteDir/$remoteName")),
+                    )
+                    files.add(FileSpec("$localDir/manifest.json", expertSources("manifest.json"), null))
+                    for (i in 0 until model.expertShardCount) {
+                        val shard = "layer_%03d.bin".format(i)
+                        files.add(FileSpec("$localDir/$shard", expertSources(shard), null))
+                    }
+                    // Make sure the experts sub-directory exists before writing.
+                    val expertsDir = File(dir, localDir)
+                    if (!expertsDir.exists()) expertsDir.mkdirs()
+                }
             }
 
             val racedLabel = files.first().sources.joinToString("+") { it.label }
@@ -878,6 +919,7 @@ class LlamaEngine private constructor(
 
     private external fun init(nativeLibDir: String)
     private external fun load(modelPath: String): Int
+    private external fun loadMoe(modelPath: String, expertsPath: String, slotBank: Int): Int
     // image_max_slice_nums: 1..9 (or -1 for model default).  See JNI for
     // the semantics; the upper layer should pass MIN_IMAGE_SLICE..MAX_IMAGE_SLICE.
     private external fun loadMmproj(mmprojPath: String, imageMaxSliceNums: Int): Int
@@ -939,7 +981,12 @@ class LlamaEngine private constructor(
         }
     }
 
-    suspend fun loadModel(pathToModel: String, pathToMmproj: String? = null) =
+    suspend fun loadModel(
+        pathToModel: String,
+        pathToMmproj: String? = null,
+        pathToExperts: String? = null,
+        slotBank: Int = 256,
+    ) =
         withContext(llamaDispatcher) {
             check(_state.value is LlamaState.Initialized) {
                 "Cannot load model in ${_state.value.javaClass.simpleName}!"
@@ -951,12 +998,26 @@ class LlamaEngine private constructor(
                     require(it.isFile) { "Not a valid file: $pathToModel" }
                     require(it.canRead()) { "Cannot read file: $pathToModel" }
                 }
+                if (pathToExperts != null) {
+                    Log.i(TAG, "Checking MoE experts dir... \n$pathToExperts")
+                    File(pathToExperts).let {
+                        require(it.exists() && it.isDirectory) { "Experts dir not found: $pathToExperts" }
+                        require(File(it, "manifest.json").exists()) { "manifest.json missing in $pathToExperts" }
+                    }
+                }
 
                 Log.i(TAG, "Loading model... \n$pathToModel")
                 _readyForSystemPrompt = false
                 _state.value = LlamaState.LoadingModel
-                load(pathToModel).let {
-                    if (it != 0) throw RuntimeException("Failed to load model (code: $it)")
+                if (pathToExperts != null) {
+                    Log.i(TAG, "MoE-SSD mode: experts=$pathToExperts slotBank=$slotBank")
+                    loadMoe(pathToModel, pathToExperts, slotBank).let {
+                        if (it != 0) throw RuntimeException("Failed to load MoE model (code: $it)")
+                    }
+                } else {
+                    load(pathToModel).let {
+                        if (it != 0) throw RuntimeException("Failed to load model (code: $it)")
+                    }
                 }
 
                 if (pathToMmproj != null) {

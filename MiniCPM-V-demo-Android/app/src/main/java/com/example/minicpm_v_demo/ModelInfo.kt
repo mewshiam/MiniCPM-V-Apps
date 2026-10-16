@@ -47,11 +47,23 @@ data class ModelInfo(
     val directAcousticUrl: String? = null,
     val ggufMd5: String? = null,
     val mmprojMd5: String? = null,
-    val acousticMd5: String? = null
+    val acousticMd5: String? = null,
+    // MoE-SSD (MiniCPM-V 4.7 35B-A3B): routed experts are stripped from the
+    // main gguf and streamed from an `experts/` sub-directory on demand
+    // (mirrors iOS MiniCPMV47Const). [expertShardCount] layer shards named
+    // layer_%03d.bin live under [expertsDirName]; [slotBank] is the per-layer
+    // resident expert slot count passed to the native loader.
+    val expertsDirName: String? = null,
+    val expertShardCount: Int = 0,
+    val slotBank: Int = 256
 ) {
     /** True for text-only models that have no vision projector. */
     val isTextOnly: Boolean
         get() = mmprojFileName == null && acousticFileName == null
+
+    /** True for MoE models whose experts stream from SSD. */
+    val isMoe: Boolean
+        get() = expertsDirName != null && expertShardCount > 0
 
     /** True for TTS (text-to-speech) models with acoustic component. */
     val isTts: Boolean
@@ -77,6 +89,13 @@ data class ModelInfo(
     /** Path segment to request on HF/MS for the acoustic GGUF, falling back to local name. */
     val acousticRemotePath: String?
         get() = acousticFileName?.let { acousticRemoteName ?: it }
+
+    /** Remote directory prefix for expert shards, e.g. "MiniCPM-V-4.7-35B-A3B/experts". */
+    val expertsRemoteDir: String?
+        get() = expertsDirName?.let {
+            val ggufDir = ggufRemotePath.substringBeforeLast('/', "")
+            if (ggufDir.isEmpty()) it else "$ggufDir/$it"
+        }
 
     /** Whether the model registers a direct (non-HF/MS) mirror URL for all required files. */
     val hasDirectUrls: Boolean
@@ -176,6 +195,41 @@ data class ModelInfo(
                 directAcousticUrl = null,
                 ggufMd5 = "d8cd571526464d225187d326caa289be",
                 acousticMd5 = "0f16229cfffe935102d21433f6969f8b"
+            ),
+            // MiniCPM-V 4.7 1B: dense multimodal model for phones (Q4_K_M).
+            // Same two-file (gguf + mmproj) flow as 4.6. Files live under the
+            // MiniCPM-V-4.7-1B/ prefix in tc-mb/MiniCPM-V-Apps-gguf, mirroring
+            // iOS MiniCPMV47_1BConst.
+            ModelInfo(
+                id = "minicpm-v-4_7-1b",
+                displayName = "MiniCPM-V 4.7 1B (Q4_K_M)",
+                descriptionResName = "model_desc_v47_1b",
+                ggufFileName = "MiniCPM-V-4_7-1B-Q4_K_M.gguf",
+                mmprojFileName = "mmproj-model-f16.gguf",
+                hfRepo = "tc-mb/MiniCPM-V-Apps-gguf",
+                msRepo = "zerg13/MiniCPM-V-Apps-gguf",
+                ggufRemoteName = "MiniCPM-V-4.7-1B/MiniCPM-V-4_7-1B-Q4_K_M.gguf",
+                mmprojRemoteName = "MiniCPM-V-4.7-1B/mmproj-model-f16.gguf"
+            ),
+            // MiniCPM-V 4.7 35B-A3B: MoE multimodal model (3B active).
+            // The `-les` variant has routed experts stripped out; they stream
+            // from experts/ (manifest.json + 40 layer_###.bin shards) on
+            // demand, so only ~3GB RAM is needed (mirrors iOS
+            // MiniCPMV47Const). Requires the experts-aware native load path.
+            ModelInfo(
+                id = "minicpm-v-4_7-35b-a3b",
+                displayName = "MiniCPM-V 4.7 35B-A3B",
+                descriptionResName = "model_desc_v47_35b",
+                ggufFileName = "MiniCPM-V-4_7-35B-A3B-mix_q3gud_im-les.gguf",
+                mmprojFileName = "mmproj-model-f16.gguf",
+                hfRepo = "tc-mb/MiniCPM-V-Apps-gguf",
+                msRepo = "zerg13/MiniCPM-V-Apps-gguf",
+                ggufRemoteName = "MiniCPM-V-4.7-35B-A3B/MiniCPM-V-4_7-35B-A3B-mix_q3gud_im-les.gguf",
+                mmprojRemoteName = "MiniCPM-V-4.7-35B-A3B/mmproj-model-f16.gguf",
+                mmprojMd5 = "2a705dfc7184f504086f48bd109e27a2",
+                expertsDirName = "experts",
+                expertShardCount = 40,
+                slotBank = 256
             )
         )
 

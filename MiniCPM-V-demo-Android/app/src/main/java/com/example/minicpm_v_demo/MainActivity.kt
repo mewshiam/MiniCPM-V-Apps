@@ -376,11 +376,18 @@ class MainActivity : AppCompatActivity() {
         val ggufFile = File(LlamaEngine.modelPath(ctx))
         val mmprojPathStr = LlamaEngine.mmprojPath(ctx)
         val mmprojFile = mmprojPathStr?.let { File(it) }
+        val expertsDirStr = model.expertsDirName?.let {
+            File(LlamaEngine.modelDirFor(ctx, model), it).absolutePath
+        }
+        val expertsDir = expertsDirStr?.let { File(it) }
 
         val ggufMissing = !ggufFile.exists()
         val mmprojMissing = !model.isTextOnly && (mmprojFile == null || !mmprojFile.exists())
+        val expertsMissing = model.isMoe && (expertsDir == null || !expertsDir.isDirectory ||
+            !File(expertsDir, "manifest.json").exists() ||
+            !(0 until model.expertShardCount).all { File(expertsDir, "layer_%03d.bin".format(it)).exists() })
 
-        if (ggufMissing || mmprojMissing) {
+        if (ggufMissing || mmprojMissing || expertsMissing) {
             promptDownloadModels(
                 ggufMissing = ggufMissing,
                 mmprojMissing = mmprojMissing
@@ -391,7 +398,8 @@ class MainActivity : AppCompatActivity() {
         lifecycleScope.launch(Dispatchers.IO) {
             try {
                 val mmprojArg = if (mmprojFile != null && mmprojFile.exists()) mmprojFile.absolutePath else null
-                engine.loadModel(ggufFile.absolutePath, mmprojArg)
+                val expertsArg = if (model.isMoe) expertsDirStr else null
+                engine.loadModel(ggufFile.absolutePath, mmprojArg, expertsArg, model.slotBank)
                 loadedModelId = model.id
             } catch (e: Exception) {
                 Log.e(TAG, "Error loading model", e)

@@ -106,6 +106,8 @@
     <string name="model_desc_minicpm5">Lightweight text-only model (1B)</string>
     <string name="model_desc_minicpm5_2b">Text-only model (2B)</string>
     <string name="model_desc_voxcpm2">Multilingual TTS with voice design and cloning (2B)</string>
+    <string name="model_desc_v47_1b">MiniCPM-V 4.7 lightweight multimodal model, phone-optimized (1B)</string>
+    <string name="model_desc_v47_35b">MiniCPM-V 4.7 MoE multimodal model, experts stream from SSD (35B-A3B)</string>
 
     <!-- VideoFrameExtractor -->
     <string name="video_label">Video</string>

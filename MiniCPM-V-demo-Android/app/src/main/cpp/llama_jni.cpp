@@ -39,6 +39,10 @@ constexpr int   DEFAULT_CONTEXT_SIZE    = 4096;
 constexpr int   V46_CONTEXT_SIZE        = 8192;
 constexpr int   OVERFLOW_HEADROOM       = 4;
 constexpr int   BATCH_SIZE              = 2048;
+// MoE-SSD (V-4.7 35B-A3B): per iOS MiniCPMV47Const, ubatch 1024 covers long
+// texts while keeping the per-graph unique-expert set small enough to
+// stream efficiently from SSD.
+constexpr int   MOE_UBATCH_SIZE         = 1024;
 // Aligned with the model's generation_config.json (do_sample=true,
 // temperature=0.7, top_k=0, top_p=1.0, repetition_penalty=1.0). top_k=0 and
 // top_p=1.0 effectively disable those filters, so sampling is pure
@@ -56,7 +60,12 @@ static mtmd_context                     * g_ctx_vision;
 // 6  = o-4.0
 // 100045 = o-4.5
 // 46/460/461 = V-4.6 (instruct/thinking)
+// 47 = V-4.7 (1B dense / 35B-A3B MoE)
 static int                                g_minicpmv_version = 0;
+
+// True when the loaded model is an MoE-SSD variant (experts stream from
+// disk). Set by loadMoe(); controls ubatch sizing in init_context.
+static bool                               g_is_moe = false;
 
 // Most recent slice cap requested by the upper layer.  Persists across
 // loadMmproj calls so a user-chosen value survives e.g. an unload/reload
@@ -142,7 +151,55 @@ Java_com_example_minicpm_1v_1demo_LlamaEngine_load(JNIEnv *env, jobject, jstring
         return 2;
     }
     g_model = model;
+    g_is_moe = false;
     LOGi("%s: Model loaded successfully!", __func__);
+    return 0;
+}
+
+// MoE-SSD variant of load(): routed experts are stripped from the gguf and
+// stream from [jexperts_path] (directory containing manifest.json +
+// layer_###.bin shards) on demand. Mirrors iOS mb_mtmd_init's
+// moe_experts_path contract. The experts path is consumed synchronously by
+// llama_model_load_from_file (llama_moe_experts reads the manifest at load
+// time), so the jstring may be released right after.
+extern "C"
+JNIEXPORT jint JNICALL
+Java_com_example_minicpm_1v_1demo_LlamaEngine_loadMoe(JNIEnv *env, jobject,
+                                                     jstring jmodel_path,
+                                                     jstring jexperts_path,
+                                                     jint jslot_bank) {
+    llama_model_params model_params = llama_model_default_params();
+
+    const char *experts_path = env->GetStringUTFChars(jexperts_path, 0);
+    model_params.moe_experts_path = experts_path;
+    model_params.moe_slot_bank = (int32_t) jslot_bank;
+    LOGi("%s: MoE-SSD experts dir: %s (slot_bank=%d)", __func__, experts_path, (int) jslot_bank);
+
+    const auto *model_path = env->GetStringUTFChars(jmodel_path, 0);
+    LOGi("%s: Loading MoE model from: \n%s\n", __func__, model_path);
+
+    FILE *f = fopen(model_path, "rb");
+    if (!f) {
+        LOGe("%s: Cannot open model file! Permission denied or file not found: %s", __func__, model_path);
+        env->ReleaseStringUTFChars(jmodel_path, model_path);
+        env->ReleaseStringUTFChars(jexperts_path, experts_path);
+        return 1;
+    }
+    fseek(f, 0, SEEK_END);
+    long file_size = ftell(f);
+    fclose(f);
+    LOGi("%s: Model file size: %ld bytes (%.2f GB)", __func__, file_size, file_size / (1024.0 * 1024.0 * 1024.0));
+
+    auto *model = llama_model_load_from_file(model_path, model_params);
+    env->ReleaseStringUTFChars(jmodel_path, model_path);
+    env->ReleaseStringUTFChars(jexperts_path, experts_path);
+    if (!model) {
+        LOGe("%s: llama_model_load_from_file returned null! Check logcat for llama.cpp internal errors.", __func__);
+        return 2;
+    }
+    g_model = model;
+    g_is_moe = true;
+    LOGi("%s: MoE model loaded successfully!", __func__);
     return 0;
 }
 
@@ -254,7 +311,7 @@ static llama_context *init_context(llama_model *model, const int n_ctx = DEFAULT
     }
     ctx_params.n_ctx = n_ctx;
     ctx_params.n_batch = BATCH_SIZE;
-    ctx_params.n_ubatch = BATCH_SIZE;
+    ctx_params.n_ubatch = g_is_moe ? MOE_UBATCH_SIZE : BATCH_SIZE;
     ctx_params.n_threads = N_THREADS;
     ctx_params.n_threads_batch = N_THREADS;
     auto *context = llama_init_from_model(g_model, ctx_params);
@@ -802,6 +859,7 @@ Java_com_example_minicpm_1v_1demo_LlamaEngine_unload(JNIEnv * /*env*/, jobject /
     llama_batch_free(g_batch);
     llama_free(g_context);
     llama_model_free(g_model);
+    g_is_moe = false;
 }
 
 extern "C"
