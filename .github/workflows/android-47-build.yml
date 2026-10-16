@@ -12,6 +12,9 @@ jobs:
     defaults:
       run:
         working-directory: MiniCPM-V-demo-Android
+    env:
+      ANDROID_HOME: /usr/local/lib/android/sdk
+      ANDROID_SDK_ROOT: /usr/local/lib/android/sdk
     steps:
       - name: Checkout (with llama.cpp-omni submodule)
         uses: actions/checkout@v4
@@ -24,11 +27,10 @@ jobs:
           distribution: temurin
           java-version: 21
 
-      - name: Set up Android SDK
-        uses: android-actions/setup-android@v3
-
-      - name: Install NDK r27 (27.0.12077973, pinned by app/build.gradle.kts)
-        run: sdkmanager "ndk;27.0.12077973"
+      - name: Accept SDK licenses and install NDK r27
+        run: |
+          yes | sdkmanager --licenses > /dev/null
+          sdkmanager "ndk;27.0.12077973" "platform-tools"
 
       - name: Build debug APK
         run: ./gradlew :app:assembleDebug --console=plain
